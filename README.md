@@ -8,17 +8,59 @@
 
 Built as a Computer Engineering student to stay focused on development and university work without constantly checking emails.
 
-### 🚀 Features
+---
 
-* 100% Serverless (Google Apps Script)
-* AI email classification with Gemini Flash-Lite
-* Instant Telegram alerts
-* Fail-safe processing (no lost emails)
-* Secure credential storage via PropertiesService
+## 🚀 Features
 
-### ⚙️ Tech Stack
+* 100% Serverless Architecture (Google Apps Script)
+* AI-powered email classification with Gemini Flash-Lite
+* Instant Telegram notifications
+* Fail-safe processing to prevent missed emails
+* Secure credential management via PropertiesService
 
-Google Apps Script • Gemini Flash-Lite • Telegram Bot API
+### Detects emails such as
+
+* Internship interview invitations
+* Google Play Console warnings
+* API deprecation notices
+* Account and billing alerts
+* Service disruption notifications
+* Other high-priority emails requiring immediate attention
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+
+gmail["Gmail Inbox"] --> script["Google Apps Script"]
+script --> gemini["Gemini Flash-Lite"]
+gemini --> decision["Priority Classification"]
+decision --> telegram["Telegram Alert"]
+```
+
+---
+
+## ⚙️ Tech Stack
+
+**Backend:** Google Apps Script
+
+**AI:** Gemini Flash-Lite
+
+**Notifications:** Telegram Bot API
+
+**Storage:** Google PropertiesService
+
+---
+
+## 💡 Why I Built This
+
+As a Computer Engineering student and Android developer, I often spend long hours coding, studying, and working on personal projects.
+
+Important emails such as internship interview invitations, Play Console warnings, or API change notifications can easily get buried among less important messages.
+
+AI-Email-Guardian acts as a personal assistant that continuously monitors incoming emails and immediately notifies me when something requires attention.
 
 ---
 
@@ -28,14 +70,56 @@ Google Apps Script • Gemini Flash-Lite • Telegram Bot API
 
 Bilgisayar Mühendisliği öğrencisi olarak, geliştirme süreçlerine ve derslere odaklanabilmek için sürekli e-posta kontrol etme ihtiyacını ortadan kaldırmak amacıyla geliştirildi.
 
-### 🚀 Özellikler
+---
 
-* %100 Sunucusuz Mimari
+## 🚀 Özellikler
+
+* %100 Sunucusuz Mimari (Google Apps Script)
 * Gemini Flash-Lite ile Akıllı Mail Analizi
 * Anlık Telegram Bildirimleri
 * Veri Kaybını Önleyen Fail-Safe Yapı
 * PropertiesService ile Güvenli Anahtar Yönetimi
 
-### ⚙️ Teknolojiler
+### Algılanabilen e-postalar
 
-Google Apps Script • Gemini Flash-Lite • Telegram Bot API
+* Staj görüşmesi davetleri
+* Google Play Console uyarıları
+* API değişiklik bildirimleri
+* Hesap ve ödeme uyarıları
+* Servis kesintisi bildirimleri
+* Acil müdahale gerektiren diğer kritik e-postalar
+
+---
+
+## 🏗️ Mimari
+
+```mermaid
+flowchart LR
+
+gmail["Gmail"] --> script["Google Apps Script"]
+script --> gemini["Gemini Flash-Lite"]
+gemini --> decision["Öncelik Analizi"]
+decision --> telegram["Telegram Bildirimi"]
+```
+
+---
+
+## ⚙️ Teknolojiler
+
+**Backend:** Google Apps Script
+
+**Yapay Zekâ:** Gemini Flash-Lite
+
+**Bildirim:** Telegram Bot API
+
+**Depolama:** Google PropertiesService
+
+---
+
+## 💡 Neden Geliştirildi?
+
+Yazılım geliştirme, dersler ve kişisel projeler arasında çalışırken önemli e-postaların gözden kaçması oldukça kolaydır.
+
+Özellikle staj görüşmeleri, Play Console uyarıları veya API değişiklikleri gibi kritik bildirimlerin zamanında fark edilmesi gerekir.
+
+AI-Email-Guardian, gelen kutusunu sürekli takip ederek önemli e-postaları analiz eder ve anında Telegram üzerinden bildirir.
