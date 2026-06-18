@@ -1,173 +1,505 @@
-const scriptProperties = PropertiesService.getScriptProperties();
-const GEMINI_API_KEY = scriptProperties.getProperty('GEMINI_KEY');
-const TELEGRAM_BOT_TOKEN = scriptProperties.getProperty('TG_TOKEN');
-const TELEGRAM_CHAT_ID = scriptProperties.getProperty('TG_CHAT_ID');
+const CONFIG = Object.freeze({
+  GEMINI_MODEL: "gemini-3.1-flash-lite",
+  PROCESSED_LABEL: "gemini-processed",
+  ERROR_LABEL: "gemini-error",
+  MAX_THREADS_PER_RUN: 10,
+  SEARCH_LOOKBACK_DAYS: 14,
+  BODY_MAX_CHARS: 4000,
+  CLEAN_BODY_PREVIEW_LIMIT: 5000,
+  SLEEP_BETWEEN_THREADS_MS: 250,
+  LOCK_WAIT_MS: 10000,
+  GEMINI_MAX_RETRIES: 3,
+  TELEGRAM_MAX_RETRIES: 3
+});
+
+// SCRIPT PROPERTIES HELPERS
 // ====================================================
+function getSecrets() {
+  const props = PropertiesService.getScriptProperties();
 
+  return {
+    geminiApiKey: props.getProperty("GEMINI_KEY"),
+    telegramBotToken: props.getProperty("TG_TOKEN"),
+    telegramChatId: props.getProperty("TG_CHAT_ID")
+  };
+}
+
+
+function validateSetup() {
+  const { geminiApiKey, telegramBotToken, telegramChatId } = getSecrets();
+  const missingKeys = [];
+
+  if (!geminiApiKey) missingKeys.push("GEMINI_KEY");
+  if (!telegramBotToken) missingKeys.push("TG_TOKEN");
+  if (!telegramChatId) missingKeys.push("TG_CHAT_ID");
+
+  if (missingKeys.length > 0) {
+    throw new Error(
+      `CRITICAL_ERROR: Script Properties alanında şu anahtarlar eksik: ${missingKeys.join(", ")}. Lütfen önce bunları tanımlayın.`
+    );
+  }
+
+  return { geminiApiKey, telegramBotToken, telegramChatId };
+}
+
+// MAIN LOOP
+// ====================================================
 function checkAndProcessEmails() {
-  const labelName = "gemini-processed";
-  const errorLabelName = "gemini-error";
-  
-  let label = GmailApp.getUserLabelByName(labelName) || GmailApp.createLabel(labelName);
-  let errorLabel = GmailApp.getUserLabelByName(errorLabelName) || GmailApp.createLabel(errorLabelName);
+  const lock = LockService.getScriptLock();
 
-  // KUSURSUZ ARAMA: Gelen kutusunda olan, işlenmemiş ve hata almamış mailler.
-  const threads = GmailApp.search(`in:inbox -label:${labelName} -label:${errorLabelName}`);
-  
-  if (threads.length === 0) {
-    Logger.log("Yeni veya işlenmemiş mail bulunamadı.");
+  if (!lock.tryLock(CONFIG.LOCK_WAIT_MS)) {
+    Logger.log("Başka bir instance zaten çalışıyor. Bu tur atlandı.");
     return;
   }
 
-  const systemPrompt = `You are Furkan's absolute elite, zero-error personal AI executive assistant. Furkan is a Computer Engineering student, an Android Developer (Kotlin, Compose), and the founder of 'Crux AI Summarize'.
-Your absolute primary directive is to digest emails with 100% precision. Missing an interview invitation, a rejection/acceptance result of a job/internship application, a security alert, or an API breakdown means absolute failure. Do NOT hallucinate, do NOT omit critical data, dates, or names.
+  try {
+    const secrets = validateSetup();
 
-CRITICAL RULES FOR APPLICATION & RESULT EMAILS:
-- Automated platform emails (LinkedIn, Indeed, Kariyer.net, etc.) contain heavy footer noise. RUTHLESSLY IGNORE all footer links, subscription disclaimers, or user profile summaries at the bottom.
-- FOCUS 100% on the core message body: Is it a job application confirmation? Is it a rejection ("başvurunuzla devam etmeyeceğiz", "olumsuz", "teşekkür ederiz")? Is it a technical test invite? State the exact final result clearly in the key points.
+    const processedLabel = getOrCreateLabel(CONFIG.PROCESSED_LABEL);
+    const errorLabel = getOrCreateLabel(CONFIG.ERROR_LABEL);
 
-CRITICAL RULES FOR ACCURACY & COMPRESSION:
-- You MUST provide EXACTLY 3 key points in the 'key_points' array. No more, no less.
-- Point 1 MUST explicitly state the Sender/Company name, the context (e.g., Job Title), and the definitive status or result.
-- All text field values must be written in clear, professional Turkish.`;
+    const query =
+      `in:inbox newer_than:${CONFIG.SEARCH_LOOKBACK_DAYS}d ` +
+      `-label:${CONFIG.PROCESSED_LABEL} -label:${CONFIG.ERROR_LABEL}`;
 
-  // Saatte maksimum 10 thread limit (Kota ve stabilite dostu)
-  const batchSize = Math.min(threads.length, 10);
+    const threads = GmailApp.search(query, 0, CONFIG.MAX_THREADS_PER_RUN);
 
-  for (let i = 0; i < batchSize; i++) {
-    const currentThread = threads[i];
-    const messages = currentThread.getMessages();
-    const lastMessage = messages[messages.length - 1];
-    
-    // Çift dikiş güvenlik kilidi
-    if (currentThread.getLabels().some(l => l.getName() === labelName)) {
-      continue;
+    if (!threads || threads.length === 0) {
+      Logger.log("Yeni veya işlenmemiş mail bulunamadı.");
+      return;
     }
 
-    const from = lastMessage.getFrom();
-    const to = lastMessage.getTo(); 
-    const subject = lastMessage.getSubject();
-    
-    // DAHİYANE METİN TEMİZLİĞİ: Uzun URL'leri ve çöp boşlukları uçurarak bağlamı korur, Gemini'yi odaklar.
-    let rawBody = lastMessage.getPlainBody() || "";
-    let cleanBody = rawBody
-      .replace(/(https?:\/\/[^\s]+)/g, "[URL]") // Bütün linkleri [URL] kelimesine çevirir
-      .replace(/\s+/g, " ")                    // Tüm ardışık boşluk ve satır başlarını tek boşluğa indirger
-      .substring(0, 4000);                     // İlk 4000 karakteri alır (Gövdeye odaklanmak için yeterli)
+    for (let i = 0; i < threads.length; i++) {
+      const currentThread = threads[i];
 
-    const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY;
-    
-    // NATIVE JSON SCHEMA DEFINITION (Gemini 2.5 Standartlarına Tam Uyumlu)
-    const payload = {
-      "systemInstruction": {
-        "parts": [{ "text": systemPrompt }]
-      },
-      "contents": [{
-        "parts": [
-          { "text": `ANALİZ EDİLECEK MAİL:\nKimden: ${from}\nKime: ${to}\nKonu: ${subject}\nİçerik:\n${cleanBody}` }
-        ]
-      }],
-      "generationConfig": {
-        "responseMimeType": "application/json",
-        "responseSchema": {
-          "type": "OBJECT",
-          "properties": {
-            "status": { "type": "STRING", "enum": ["CRITICAL", "IMPORTANT", "IGNORE"] },
-            "category": { "type": "STRING", "enum": ["API_UPDATE", "INTERNSHIP", "SECURITY", "DIRECT_MAIL", "OTHER"] },
-            "key_points": {
-              "type": "ARRAY",
-              "items": { "type": "STRING" },
-              "description": "Must contain EXACTLY 3 high-impact items in Turkish."
-            },
-            "action_required": { "type": "STRING", "description": "Next step for Furkan in Turkish." }
-          },
-          "required": ["status", "category", "key_points", "action_required"]
+      try {
+        if (threadHasLabel(currentThread, CONFIG.PROCESSED_LABEL)) {
+          continue;
         }
+
+        const messages = currentThread.getMessages();
+        if (!messages || messages.length === 0) {
+          throw new Error("Thread içinde mesaj bulunamadı.");
+        }
+
+        const lastMessage = messages[messages.length - 1];
+
+        const from = lastMessage.getFrom() || "Bilinmeyen Gönderen";
+        const to = lastMessage.getTo() || "Bilinmeyen Alıcı";
+        const subject = lastMessage.getSubject() || "(Konu Yok)";
+
+        let rawBody = (lastMessage.getPlainBody() || "").trim();
+        if (!rawBody) {
+          rawBody = "[Bu mail düz metin içeriği barındırmıyor, sadece HTML veya görsel içerikten oluşuyor olabilir.]";
+        }
+
+        const cleanBody = sanitizeEmailBody(rawBody, CONFIG.CLEAN_BODY_PREVIEW_LIMIT, CONFIG.BODY_MAX_CHARS);
+
+        const aiResult = analyzeWithGemini(
+          cleanBody,
+          from,
+          to,
+          subject,
+          secrets.geminiApiKey
+        );
+
+        validateAiResult(aiResult);
+
+        if (aiResult.status === "CRITICAL" || aiResult.status === "IMPORTANT") {
+          sendTelegramNotification(
+            from,
+            subject,
+            aiResult,
+            secrets.telegramBotToken,
+            secrets.telegramChatId
+          );
+        }
+
+        currentThread.addLabel(processedLabel);
+        if (threadHasLabel(currentThread, CONFIG.ERROR_LABEL)) {
+          currentThread.removeLabel(errorLabel);
+        }
+
+        Utilities.sleep(CONFIG.SLEEP_BETWEEN_THREADS_MS);
+      } catch (threadError) {
+        const subjectSafe = currentThread.getMessages().length
+          ? currentThread.getMessages()[currentThread.getMessages().length - 1].getSubject()
+          : "(Konu Yok)";
+
+        Logger.log(`HATA OLUŞTU - Konu: ${subjectSafe} | Hata: ${threadError.message}`);
+
+        if (isRateLimitError(threadError)) {
+          Logger.log("Rate limit / geçici servis hatası tespit edildi. Kalan mailler bir sonraki çalışmaya bırakılıyor.");
+          break;
+        }
+
+        try {
+          currentThread.addLabel(errorLabel);
+        } catch (labelError) {
+          Logger.log(`Hata etiketi eklenemedi: ${labelError.message}`);
+        }
+
+        Utilities.sleep(CONFIG.SLEEP_BETWEEN_THREADS_MS);
       }
-    };
-
-    const options = {
-      "method": "post",
-      "contentType": "application/json",
-      "payload": JSON.stringify(payload),
-      "muteHttpExceptions": true
-    };
-
-    try {
-      const response = UrlFetchApp.fetch(url, options);
-      const responseCode = response.getResponseCode();
-      
-      if (responseCode !== 200) {
-        throw new Error(`API Hatası! Kod: ${responseCode} - Yanıt: ${response.getContentText()}`);
-      }
-
-      const jsonResponse = JSON.parse(response.getContentText());
-      if (!jsonResponse.candidates || jsonResponse.candidates.length === 0) {
-        throw new Error("Gemini geçerli bir yanıt üretemedi.");
-      }
-      
-      const aiResultText = jsonResponse.candidates[0].content.parts[0].text;
-      const aiResult = JSON.parse(aiResultText);
-
-      // Sadece CRITICAL veya IMPORTANT ise Telegram'a gönder
-      if (aiResult.status === "CRITICAL" || aiResult.status === "IMPORTANT") {
-        sendTelegramNotification(from, to, subject, aiResult);
-      }
-
-      // BAŞARI: Etiketleri güncelle
-      currentThread.addLabel(label);
-      currentThread.removeLabel(errorLabel);
-      
-      // DOĞRU YÖNTEM: Değişiklikleri Gmail/Apps Script kuyruğuna anında işletmek için SpreadsheetApp.flush() kullanılır.
-      SpreadsheetApp.flush();
-
-    } catch (e) {
-      Logger.log("HATA BÖLGESİ (Zehirli Hap Devrede): " + e.toString());
-      currentThread.addLabel(errorLabel);
-      SpreadsheetApp.flush(); // Hata etiketini de anında işle ki sonsuz döngüye girmesin
     }
+  } catch (setupOrFatalError) {
+    Logger.log(`FATAL: ${setupOrFatalError.message}`);
+    throw setupOrFatalError;
+  } finally {
+    lock.releaseLock();
   }
 }
 
-function sendTelegramNotification(from, to, subject, aiResult) {
-  const badge = aiResult.status === "CRITICAL" ? "🔴 <b>CRITICAL</b>" : "🟡 <b>IMPORTANT</b>";
-  
-  let pointsText = "";
-  if (aiResult.key_points && aiResult.key_points.length > 0) {
-    pointsText = aiResult.key_points.map((p) => `• ${p}`).join("\n");
-  } else {
-    pointsText = "• Detay ayıklanamadı.";
-  }
+// GMAIL HELPERS
+// ====================================================
+function getOrCreateLabel(labelName) {
+  return GmailApp.getUserLabelByName(labelName) || GmailApp.createLabel(labelName);
+}
 
-  // Telegram HTML Parse Modu Güvenlik Temizliği
-  const cleanFrom = from.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const cleanTo = to.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const cleanSubject = subject.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function threadHasLabel(thread, labelName) {
+  const labels = thread.getLabels() || [];
+  return labels.some(label => label.getName() === labelName);
+}
 
-  const messageText = `${badge} <b>YENİ MAİL</b>\n` +
-                      `━━━━━━━━━━━━━━━━━━━━\n` +
-                      `📩 <b>Alıcı:</b> ${cleanTo}\n` +
-                      `👤 <b>Gönderen:</b> ${cleanFrom}\n` +
-                      `━━━━━━━━━━━━━━━━━━━━\n` +
-                      `📝 <b>Konu:</b> ${cleanSubject}\n\n` +
-                      `🔑 <b>ÖNEMLİ NOKTALAR:</b>\n${pointsText}\n` +
-                      `━━━━━━━━━━━━━━━━━━━━\n` +
-                      `⚡ <b>GEREKEN AKSİYON:</b> ${aiResult.action_required}`;
+// EMAIL BODY SANITIZER
+// ====================================================
+function sanitizeEmailBody(body, previewLimit, maxChars) {
+  let text = String(body || "").trim();
 
-  const telegramUrl = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage";
-  
+  text = text.substring(0, previewLimit);
+  text = text.replace(/(https?:\/\/[^\s]+)/g, "[URL]");
+  text = text.replace(/\s+/g, " ").trim();
+  text = text.substring(0, maxChars);
+
+  return text || "[Boş içerik]";
+}
+
+// GEMINI
+// ====================================================
+function analyzeWithGemini(cleanBody, from, to, subject, geminiApiKey) {
+  const systemPrompt = `
+You are Furkan's highly reliable email classification assistant.
+
+Your job:
+- Detect important emails about internship/job applications, interview invitations, technical assessments, rejections, acceptances, security alerts, API/service issues, and other actionable messages.
+- Ignore newsletters, marketing, promotions, and weak noise.
+- Return accurate, concise, professional Turkish.
+
+CRITICAL RULES:
+- Ignore footers, unsubscribe blocks, legal disclaimers, and profile summaries from automated platforms.
+- Focus on the real core message.
+- Do not hallucinate names, dates, or outcomes.
+- key_points MUST contain exactly 3 items.
+- Point 1 must state sender/company, context, and final status/result.
+- If the email contains interview invitation, internship invitation, technical assessment, coding challenge, rejection result, acceptance result, security alert, password reset, billing issue, or API breakdown, status MUST NOT be IGNORE.
+
+Return ONLY valid JSON matching the schema.
+`.trim();
+
+  const url =
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+    encodeURIComponent(CONFIG.GEMINI_MODEL) +
+    ":generateContent?key=" +
+    encodeURIComponent(geminiApiKey);
+
   const payload = {
-    "chat_id": TELEGRAM_CHAT_ID,
-    "text": messageText,
-    "parse_mode": "HTML"
+    systemInstruction: {
+      parts: [{ text: systemPrompt }]
+    },
+    contents: [{
+      parts: [{
+        text:
+          "ANALİZ EDİLECEK MAİL:\n" +
+          `Kimden: ${from}\n` +
+          `Kime: ${to}\n` +
+          `Konu: ${subject}\n` +
+          `İçerik: ${cleanBody}`
+      }]
+    }],
+    generationConfig: {
+      temperature: 0.1,
+      topP: 0.9,
+      maxOutputTokens: 700,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          status: {
+            type: "STRING",
+            enum: ["CRITICAL", "IMPORTANT", "IGNORE"]
+          },
+          category: {
+            type: "STRING",
+            enum: ["API_UPDATE", "INTERNSHIP", "SECURITY", "DIRECT_MAIL", "OTHER"]
+          },
+          key_points: {
+            type: "ARRAY",
+            minItems: 3,
+            maxItems: 3,
+            items: { type: "STRING" }
+          },
+          action_required: {
+            type: "STRING"
+          }
+        },
+        required: ["status", "category", "key_points", "action_required"]
+      }
+    }
   };
 
   const options = {
-    "method": "post",
-    "contentType": "application/json",
-    "payload": JSON.stringify(payload),
-    "muteHttpExceptions": true
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
   };
 
-  UrlFetchApp.fetch(telegramUrl, options);
+  const response = fetchWithRetry(url, options, CONFIG.GEMINI_MAX_RETRIES);
+  const responseCode = response.getResponseCode();
+  const responseText = response.getContentText();
+
+  if (responseCode !== 200) {
+    throw new Error(`HTTP_ERR_${responseCode}: ${responseText}`);
+  }
+
+  const jsonResponse = JSON.parse(responseText);
+
+  const aiText = extractGeminiText(jsonResponse);
+  const cleanedJsonText = stripCodeFences(aiText);
+  const parsed = parseJsonSafely(cleanedJsonText);
+
+  return parsed;
+}
+
+function fetchWithRetry(url, options, maxRetries) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const code = response.getResponseCode();
+
+      if (code === 200) {
+        return response;
+      }
+
+      const body = response.getContentText();
+      const retryableCodes = [429, 500, 502, 503, 504];
+
+      if (retryableCodes.includes(code)) {
+        lastError = new Error(`HTTP_ERR_${code}: ${body}`);
+        if (attempt < maxRetries) {
+          Utilities.sleep(getBackoffMs(attempt));
+          continue;
+        }
+        throw lastError;
+      }
+
+      throw new Error(`HTTP_ERR_${code}: ${body}`);
+    } catch (err) {
+      lastError = err;
+
+      if (attempt < maxRetries && isRetryableException(err)) {
+        Utilities.sleep(getBackoffMs(attempt));
+        continue;
+      }
+
+      throw lastError;
+    }
+  }
+
+  throw lastError || new Error("Fetch başarısız.");
+}
+
+function getBackoffMs(attempt) {
+  return Math.min(8000, Math.pow(2, attempt) * 1000);
+}
+
+function isRetryableException(err) {
+  const msg = String(err && err.message ? err.message : err).toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("500") ||
+    msg.includes("502") ||
+    msg.includes("503") ||
+    msg.includes("504") ||
+    msg.includes("rate limit") ||
+    msg.includes("timed out") ||
+    msg.includes("timeout")
+  );
+}
+
+function isRateLimitError(err) {
+  const msg = String(err && err.message ? err.message : err).toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("rate limit") ||
+    msg.includes("503") ||
+    msg.includes("504")
+  );
+}
+
+function extractGeminiText(jsonResponse) {
+  const candidates = jsonResponse && jsonResponse.candidates;
+  if (!candidates || !candidates.length) {
+    throw new Error("Gemini geçerli bir candidate döndürmedi.");
+  }
+
+  const parts = candidates[0] &&
+    candidates[0].content &&
+    candidates[0].content.parts;
+
+  if (!parts || !parts.length) {
+    throw new Error("Gemini content.parts boş.");
+  }
+
+  const text = parts
+    .map(part => (part && part.text ? part.text : ""))
+    .join("\n")
+    .trim();
+
+  if (!text) {
+    throw new Error("Gemini metin üretmedi.");
+  }
+
+  return text;
+}
+
+function stripCodeFences(text) {
+  let output = String(text || "").trim();
+
+  output = output
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  const firstBrace = output.indexOf("{");
+  const lastBrace = output.lastIndexOf("}");
+
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    output = output.substring(firstBrace, lastBrace + 1).trim();
+  }
+
+  return output;
+}
+
+function parseJsonSafely(text) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      "Gemini JSON parse hatası: " +
+      String(err.message || err) +
+      " | Preview: " +
+      text.substring(0, 500)
+    );
+  }
+}
+
+function validateAiResult(data) {
+  if (!data || typeof data !== "object") {
+    throw new Error("AI response geçersiz.");
+  }
+
+  const validStatuses = ["CRITICAL", "IMPORTANT", "IGNORE"];
+  const validCategories = ["API_UPDATE", "INTERNSHIP", "SECURITY", "DIRECT_MAIL", "OTHER"];
+
+  if (!validStatuses.includes(data.status)) {
+    throw new Error(`Geçersiz status: ${data.status}`);
+  }
+
+  if (!validCategories.includes(data.category)) {
+    throw new Error(`Geçersiz category: ${data.category}`);
+  }
+
+  if (!Array.isArray(data.key_points)) {
+    throw new Error("key_points array değil.");
+  }
+
+  if (data.key_points.length !== 3) {
+    throw new Error(`key_points tam 3 eleman içermeli. Gelen: ${data.key_points.length}`);
+  }
+
+  for (let i = 0; i < data.key_points.length; i++) {
+    if (typeof data.key_points[i] !== "string" || !data.key_points[i].trim()) {
+      throw new Error(`key_points[${i}] geçersiz.`);
+    }
+  }
+
+  if (typeof data.action_required !== "string" || !data.action_required.trim()) {
+    throw new Error("action_required boş veya geçersiz.");
+  }
+
+  return true;
+}
+
+// TELEGRAM
+// ====================================================
+function sendTelegramNotification(from, subject, aiResult, telegramBotToken, telegramChatId) {
+  const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+
+  const emoji = aiResult.status === "CRITICAL" ? "🚨" : "⚠️";
+
+  const messageText =
+    `${emoji} *${escapeMarkdownV2(aiResult.status)} MAIL DETECTED*\n\n` +
+    `👤 *Kimden:* ${escapeMarkdownV2(from)}\n` +
+    `📌 *Konu:* ${escapeMarkdownV2(subject)}\n` +
+    `📂 *Kategori:* ${escapeMarkdownV2(aiResult.category)}\n\n` +
+    `*Önemli Çıktılar:*\n` +
+    `1\\. ${escapeMarkdownV2(aiResult.key_points[0])}\n` +
+    `2\\. ${escapeMarkdownV2(aiResult.key_points[1])}\n` +
+    `3\\. ${escapeMarkdownV2(aiResult.key_points[2])}\n\n` +
+    `🎯 *Aksiyon:* ${escapeMarkdownV2(aiResult.action_required)}`;
+
+  const payload = {
+    chat_id: telegramChatId,
+    text: messageText,
+    parse_mode: "MarkdownV2",
+    disable_web_page_preview: true
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = fetchWithRetry(url, options, CONFIG.TELEGRAM_MAX_RETRIES);
+  const code = response.getResponseCode();
+
+  if (code !== 200) {
+    Logger.log(`Telegram gönderim hatası: ${response.getContentText()}`);
+  }
+}
+
+/**
+ * Telegram MarkdownV2 için özel karakterleri escape eder.
+ */
+function escapeMarkdownV2(text) {
+  if (text === null || text === undefined) return "";
+  return String(text).replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+}
+
+// OPTIONAL TEST
+// ====================================================
+function testTelegram() {
+  const secrets = validateSetup();
+  sendTelegramNotification(
+    "Test Gönderen <test@example.com>",
+    "Test Konusu",
+    {
+      status: "IMPORTANT",
+      category: "DIRECT_MAIL",
+      key_points: [
+        "Bu bir test bildirimi.",
+        "Telegram entegrasyonu çalışıyor.",
+        "JSON ve MarkdownV2 akışı doğru."
+      ],
+      action_required: "Bu sadece test olduğu için işlem yapmana gerek yok."
+    },
+    secrets.telegramBotToken,
+    secrets.telegramChatId
+  );
 }
