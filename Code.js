@@ -71,6 +71,7 @@ function checkAndProcessEmails() {
 
     for (let i = 0; i < threads.length; i++) {
       const currentThread = threads[i];
+      let subjectSafe = "(Konu Yok)"; // DÖNGÜ BAŞINDA GÜVENLİ DEĞİŞKENİ TANIMLA
 
       try {
         if (threadHasLabel(currentThread, CONFIG.PROCESSED_LABEL)) {
@@ -87,10 +88,17 @@ function checkAndProcessEmails() {
         const from = lastMessage.getFrom() || "Bilinmeyen Gönderen";
         const to = lastMessage.getTo() || "Bilinmeyen Alıcı";
         const subject = lastMessage.getSubject() || "(Konu Yok)";
+        
+        subjectSafe = subject;
 
         let rawBody = (lastMessage.getPlainBody() || "").trim();
         if (!rawBody) {
-          rawBody = "[Bu mail düz metin içeriği barındırmıyor, sadece HTML veya görsel içerikten oluşuyor olabilir.]";
+           const htmlBody = lastMessage.getBody() || "";
+           rawBody = htmlBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+
+        if (!rawBody) {
+         rawBody = "[İçerik okunamadı]";
         }
 
         const cleanBody = sanitizeEmailBody(rawBody, CONFIG.CLEAN_BODY_PREVIEW_LIMIT, CONFIG.BODY_MAX_CHARS);
@@ -122,10 +130,7 @@ function checkAndProcessEmails() {
 
         Utilities.sleep(CONFIG.SLEEP_BETWEEN_THREADS_MS);
       } catch (threadError) {
-        const subjectSafe = currentThread.getMessages().length
-          ? currentThread.getMessages()[currentThread.getMessages().length - 1].getSubject()
-          : "(Konu Yok)";
-
+        // BURADA ARTIK getMessages() ÇAĞIRMIYORUZ, SADECE subjectSafe KULLANIYORUZ
         Logger.log(`HATA OLUŞTU - Konu: ${subjectSafe} | Hata: ${threadError.message}`);
 
         if (isRateLimitError(threadError)) {
@@ -151,7 +156,6 @@ function checkAndProcessEmails() {
 }
 
 // GMAIL HELPERS
-// ====================================================
 function getOrCreateLabel(labelName) {
   return GmailApp.getUserLabelByName(labelName) || GmailApp.createLabel(labelName);
 }
