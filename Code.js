@@ -84,21 +84,30 @@ function checkAndProcessEmails() {
         }
 
         const lastMessage = messages[messages.length - 1];
-
         const from = lastMessage.getFrom() || "Bilinmeyen Gönderen";
         const to = lastMessage.getTo() || "Bilinmeyen Alıcı";
         const subject = lastMessage.getSubject() || "(Konu Yok)";
         
         subjectSafe = subject;
 
-        let rawBody = (lastMessage.getPlainBody() || "").trim();
-        if (!rawBody) {
-           const htmlBody = lastMessage.getBody() || "";
-           rawBody = htmlBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        // Thread içindeki TÜM mesajların içeriklerini aralarına ayraç koyarak birleştiriyoruz
+        let combinedRawBody = "";
+        for (let j = 0; j < messages.length; j++) {
+          let msgBody = (messages[j].getPlainBody() || "").trim();
+          
+          if (!msgBody) {
+            const htmlBody = messages[j].getBody() || "";
+            msgBody = extractTextFromHtml(htmlBody); // Gelişmiş HTML temizleyici çağrısı
+          }
+          
+          if (msgBody) {
+            combinedRawBody += `\n--- MESAJ ${j + 1} ---\n${msgBody}\n`;
+          }
         }
 
+        let rawBody = combinedRawBody.trim();
         if (!rawBody) {
-         rawBody = "[İçerik okunamadı]";
+          rawBody = "[İçerik okunamadı]";
         }
 
         const cleanBody = sanitizeEmailBody(rawBody, CONFIG.CLEAN_BODY_PREVIEW_LIMIT, CONFIG.BODY_MAX_CHARS);
@@ -177,6 +186,20 @@ function sanitizeEmailBody(body, previewLimit, maxChars) {
 
   return text || "[Boş içerik]";
 }
+
+function extractTextFromHtml(htmlContent) {
+  if (!htmlContent) return "";
+  
+  let text = String(htmlContent);
+  
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ");
+  text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ");
+  text = text.replace(/<[^>]+>/g, " ");
+  text = text.replace(/&[a-z0-9]+;/gi, " ");
+  
+  return text.replace(/\s+/g, " ").trim();
+}
+
 
 // GEMINI
 // ====================================================
