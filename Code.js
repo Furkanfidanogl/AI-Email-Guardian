@@ -353,6 +353,19 @@ function isRetryableException(err) {
   );
 }
 
+// EKLENDİ: checkAndProcessEmails içinde çağrılıyordu ama tanımı yoktu.
+// Projenizde başka bir dosyada zaten varsa bu tanımı silin / birleştirin.
+function isRateLimitError(err) {
+  const msg = String(err && err.message ? err.message : err).toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("rate limit") ||
+    msg.includes("quota") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("service invoked too many times")
+  );
+}
+
 function extractGeminiText(jsonResponse) {
   const candidates = jsonResponse && jsonResponse.candidates;
   if (!candidates || !candidates.length) {
@@ -451,7 +464,9 @@ function validateAiResult(data) {
 // TELEGRAM
 // ====================================================
 function sendTelegramNotification(from, subject, aiResult, telegramBotToken, telegramChatId) {
-  const url = `[https://api.telegram.org/bot$](https://api.telegram.org/bot$){telegramBotToken}/sendMessage`;
+  // DÜZELTME: Eski satır bozuk bir markdown-link kalıntısıydı ve
+  // telegramBotToken hiç interpolate edilmiyordu ($ eksikti).
+  const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
 
   // ÖNEM DERECESİNE GÖRE EMOJİ
   let emoji = "ℹ️";
