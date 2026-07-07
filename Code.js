@@ -24,7 +24,6 @@ function getSecrets() {
   };
 }
 
-
 function validateSetup() {
   const { geminiApiKey, telegramBotToken, telegramChatId } = getSecrets();
   const missingKeys = [];
@@ -71,7 +70,7 @@ function checkAndProcessEmails() {
 
     for (let i = 0; i < threads.length; i++) {
       const currentThread = threads[i];
-      let subjectSafe = "(Konu Yok)"; // DÖNGÜ BAŞINDA GÜVENLİ DEĞİŞKENİ TANIMLA
+      let subjectSafe = "(Konu Yok)";
 
       try {
         if (threadHasLabel(currentThread, CONFIG.PROCESSED_LABEL)) {
@@ -90,14 +89,13 @@ function checkAndProcessEmails() {
         
         subjectSafe = subject;
 
-        // Thread içindeki TÜM mesajların içeriklerini aralarına ayraç koyarak birleştiriyoruz
         let combinedRawBody = "";
         for (let j = 0; j < messages.length; j++) {
           let msgBody = (messages[j].getPlainBody() || "").trim();
           
           if (!msgBody) {
             const htmlBody = messages[j].getBody() || "";
-            msgBody = extractTextFromHtml(htmlBody); // Gelişmiş HTML temizleyici çağrısı
+            msgBody = extractTextFromHtml(htmlBody);
           }
           
           if (msgBody) {
@@ -122,7 +120,7 @@ function checkAndProcessEmails() {
 
         validateAiResult(aiResult);
 
-        if (aiResult.status === "CRITICAL" || aiResult.status === "IMPORTANT") {
+        if (aiResult.status !== "SPAM") {
           sendTelegramNotification(
             from,
             subject,
@@ -139,7 +137,6 @@ function checkAndProcessEmails() {
 
         Utilities.sleep(CONFIG.SLEEP_BETWEEN_THREADS_MS);
       } catch (threadError) {
-        // BURADA ARTIK getMessages() ÇAĞIRMIYORUZ, SADECE subjectSafe KULLANIYORUZ
         Logger.log(`HATA OLUŞTU - Konu: ${subjectSafe} | Hata: ${threadError.message}`);
 
         if (isRateLimitError(threadError)) {
@@ -175,7 +172,6 @@ function threadHasLabel(thread, labelName) {
 }
 
 // EMAIL BODY SANITIZER
-// ====================================================
 function sanitizeEmailBody(body, previewLimit, maxChars) {
   let text = String(body || "").trim();
 
@@ -208,17 +204,18 @@ function analyzeWithGemini(cleanBody, from, to, subject, geminiApiKey) {
 You are Furkan's highly reliable email classification assistant.
 
 Your job:
-- Detect important emails about internship/job applications, interview invitations, technical assessments, rejections, acceptances, security alerts, API/service issues, and other actionable messages.
-- Ignore newsletters, marketing, promotions, and weak noise.
+- Analyze all incoming emails and extract 3 key points.
+- Classify them into statuses:
+  * CRITICAL: School announcements, exam results, internship/job interview invites, technical assessments, acceptances/rejections, urgent security alerts.
+  * IMPORTANT: Job updates, system/API notifications, general actionable emails.
+  * NORMAL: Newsletters, marketing, promotions, event reminders, and general info.
+  * SPAM: Blatant phishing, scams, or malicious garbage.
 - Return accurate, concise, professional Turkish.
 
 CRITICAL RULES:
-- Ignore footers, unsubscribe blocks, legal disclaimers, and profile summaries from automated platforms.
-- Focus on the real core message.
 - Do not hallucinate names, dates, or outcomes.
 - key_points MUST contain exactly 3 items.
 - Point 1 must state sender/company, context, and final status/result.
-- If the email contains interview invitation, internship invitation, technical assessment, coding challenge, rejection result, acceptance result, security alert, password reset, billing issue, or API breakdown, status MUST NOT be IGNORE.
 
 Return ONLY valid JSON matching the schema.
 `.trim();
@@ -253,11 +250,11 @@ Return ONLY valid JSON matching the schema.
         properties: {
           status: {
             type: "STRING",
-            enum: ["CRITICAL", "IMPORTANT", "IGNORE"]
+            enum: ["CRITICAL", "IMPORTANT", "NORMAL", "SPAM"]
           },
           category: {
             type: "STRING",
-            enum: ["API_UPDATE", "INTERNSHIP", "SECURITY", "DIRECT_MAIL", "OTHER"]
+            enum: ["API_UPDATE", "INTERNSHIP", "SECURITY", "DIRECT_MAIL", "PROMOTION", "OTHER"]
           },
           key_points: {
             type: "ARRAY",
@@ -356,16 +353,6 @@ function isRetryableException(err) {
   );
 }
 
-function isRateLimitError(err) {
-  const msg = String(err && err.message ? err.message : err).toLowerCase();
-  return (
-    msg.includes("429") ||
-    msg.includes("rate limit") ||
-    msg.includes("503") ||
-    msg.includes("504")
-  );
-}
-
 function extractGeminiText(jsonResponse) {
   const candidates = jsonResponse && jsonResponse.candidates;
   if (!candidates || !candidates.length) {
@@ -429,8 +416,8 @@ function validateAiResult(data) {
     throw new Error("AI response geçersiz.");
   }
 
-  const validStatuses = ["CRITICAL", "IMPORTANT", "IGNORE"];
-  const validCategories = ["API_UPDATE", "INTERNSHIP", "SECURITY", "DIRECT_MAIL", "OTHER"];
+  const validStatuses = ["CRITICAL", "IMPORTANT", "NORMAL", "SPAM"];
+  const validCategories = ["API_UPDATE", "INTERNSHIP", "SECURITY", "DIRECT_MAIL", "PROMOTION", "OTHER"];
 
   if (!validStatuses.includes(data.status)) {
     throw new Error(`Geçersiz status: ${data.status}`);
@@ -464,9 +451,12 @@ function validateAiResult(data) {
 // TELEGRAM
 // ====================================================
 function sendTelegramNotification(from, subject, aiResult, telegramBotToken, telegramChatId) {
-  const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+  const url = `[https://api.telegram.org/bot$](https://api.telegram.org/bot$){telegramBotToken}/sendMessage`;
 
-  const emoji = aiResult.status === "CRITICAL" ? "🚨" : "⚠️";
+  // ÖNEM DERECESİNE GÖRE EMOJİ
+  let emoji = "ℹ️";
+  if (aiResult.status === "CRITICAL") emoji = "🚨";
+  else if (aiResult.status === "IMPORTANT") emoji = "⚠️";
 
   const messageText =
     `${emoji} *${escapeMarkdownV2(aiResult.status)} MAIL DETECTED*\n\n` +
@@ -496,14 +486,12 @@ function sendTelegramNotification(from, subject, aiResult, telegramBotToken, tel
   const response = fetchWithRetry(url, options, CONFIG.TELEGRAM_MAX_RETRIES);
   const code = response.getResponseCode();
 
+  // EĞER TELEGRAM'A GİTMEZSE HATA FIRLAT Kİ, ETİKET BASILMASIN VE SONRAKİ TUR TEKRAR DENESİN
   if (code !== 200) {
-    Logger.log(`Telegram gönderim hatası: ${response.getContentText()}`);
+    throw new Error(`Telegram gönderim hatası: HTTP ${code} - ${response.getContentText()}`);
   }
 }
 
-/**
- * Telegram MarkdownV2 için özel karakterleri escape eder.
- */
 function escapeMarkdownV2(text) {
   if (text === null || text === undefined) return "";
   return String(text).replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
