@@ -1,125 +1,69 @@
-# 🛡️ AI-Email-Guardian
+# AI-Email-Guardian
 
-> **Built to make sure I never miss an API change, Play Console warning, or internship interview email again.**
->
-> **API değişikliklerini, Play Console uyarılarını ve staj görüşmesi davetlerini kaçırmamak için geliştirdiğim yapay zekâ destekli e-posta asistanı.**
+Gmail → Gemini → Telegram. A lightweight Google Apps Script assistant that flags important messages while preserving the facts that matter.
 
-**AI-powered Gmail filter that detects critical emails and instantly forwards them to Telegram.**
+## What changed (November 2026)
 
-Built as a Computer Engineering student to stay focused on development and university work without constantly checking emails.
+- **Evidence-grounded summaries.** Every AI-generated bullet references one to three specific excerpts from the original email; unsupported numbers are replaced by concise, verbatim source excerpts.
+- **Exact amounts and dates.** No AI-generated thousands separators, mathematical guesses or currency conversions. The regression case **₺179,99/ay vs 17.999 TL** is covered by an automated test.
+- **No noisy verification notices.** A suspect bullet falls back to the actual evidence, not an alarming "numbers cannot be verified" Telegram message.
+- **Natural 1–3 bullet summaries.** More relevant detail on informative messages; no filler just to reach three points.
+- **Independent priority and action detection.** "Yapılacak" appears only for supported actionable requests.
+- **Clean Telegram UI.** Priority, category, sender, useful summary, conditional action and Gmail deep-link button.
+- **Finance is finance.** Market newsletters are classified under PİYASA rather than TEKNOLOJİ when appropriate.
+- **Reply-aware deduplication.** Incoming new replies are eligible for processing even after a thread was labeled. Existing historical gemini-processed labels are migrated without replay.
+- **Non-destructive processing.** No automatic deletion, archiving, or marking emails as read. Credentials stay in Script Properties.
 
----
+## Install / update
 
-## 🚀 Features
+1. Create a Google Apps Script project, or open your existing one.
+2. Replace the entire script file with **Code.js** from this repository.
+3. Under **Project Settings → Script Properties**, configure:
+   - GEMINI_KEY — Gemini API key
+   - TG_TOKEN — Telegram bot token
+   - TG_CHAT_ID — target Telegram chat ID
+4. Run **testNumericSafety** to verify numeric regression checks without network access.
+5. Run **testTelegram** to send one sample message.
+6. Keep one time-driven trigger calling **checkAndProcessEmails**. Do not create duplicate triggers.
 
-* 100% Serverless Architecture (Google Apps Script)
-* AI-powered email classification with Gemini Flash-Lite
-* Instant Telegram notifications
-* Fail-safe processing to prevent missed emails
-* Secure credential management via PropertiesService
+The repo does **not** deploy to your personal Apps Script project automatically. Copying Code.js into the script editor and saving it is required for production to change.
 
-### Detects emails such as
+## How it works
 
-* Internship interview invitations
-* Google Play Console warnings
-* API deprecation notices
-* Account and billing alerts
-* Service disruption notifications
-* Other high-priority emails requiring immediate attention
+1. GmailApp reads recent inbox threads, including any new replies.
+2. Email content is cleaned; long tracking URLs are removed *before* selecting text.
+3. Exact source excerpts receive evidence IDs (E0, E1, ...).
+4. Gemini Interactions API returns structured summary bullets with evidence IDs.
+5. Source checks validate numeric sequences and currency claims against the selected excerpts.
+6. A problematic bullet is replaced by a short source excerpt. The whole notification is not discarded.
+7. Telegram receives a short HTML-formatted notification with an optional action.
+8. The last successful message ID is stored in Script Properties to prevent routine duplicates.
 
----
+## Run tests locally
 
-## 🏗️ Architecture
+Requires Node.js 18+ (no npm install needed):
 
-```mermaid
-flowchart LR
+    node --check Code.js
+    node --test tests/guardian.test.cjs
 
-gmail["Gmail Inbox"] --> script["Google Apps Script"]
-script --> gemini["Gemini Flash-Lite"]
-gemini --> decision["Priority Classification"]
-decision --> telegram["Telegram Alert"]
-```
+## Reliability boundaries
 
----
+This is **not guaranteed 100% accurate**. Matching numbers to quoted excerpts reduces numeric hallucinations, but it cannot prove that all paraphrases are semantically faithful or that a payment was actually settled. Always use the original email or official account statement for consequential financial/security decisions.
 
-## ⚙️ Tech Stack
+Telegram delivery and storing the processed ID are separate operations: a crash between them can deliver a duplicate. Gmail search covers recent inbox threads and the configured scan limit, not all possible mail.
 
-**Backend:** Google Apps Script
+## Stack
 
-**AI:** Gemini Flash-Lite
+- Google Apps Script (V8) and GmailApp
+- Gemini Interactions API, JSON structured outputs
+- Telegram Bot API
+- PropertiesService + LockService
+- Node.js built-in test runner (local regression tests)
 
-**Notifications:** Telegram Bot API
+## Türkçe
 
-**Storage:** Google PropertiesService
+Bu proje, Gmail'deki e-postaları Gemini ile özetleyip Telegram'a ileten kişisel bir asistandır. Özellikle **yanlış para tutarı**, **uydurulmuş tarih**, **gereksiz "doğrulanamadı" bildirimi** ve **bir kez işlenmiş konuşmadaki yeni mesajın kaçırılması** sorunlarına odaklanır.
 
----
+Önem seviyesi ile aksiyon ihtiyacı birbirinden bağımsızdır. İşlem gerekmeyen bir e-postada boş bir "Aksiyon" alanı gösterilmez.
 
-## 💡 Why I Built This
-
-As a Computer Engineering student and Android developer, I often spend long hours coding, studying, and working on personal projects.
-
-Important emails such as internship interview invitations, Play Console warnings, or API change notifications can easily get buried among less important messages.
-
-AI-Email-Guardian acts as a personal assistant that continuously monitors incoming emails and immediately notifies me when something requires attention.
-
----
-
-# 🇹🇷 Türkçe
-
-**Kritik e-postaları tespit edip anında Telegram'a ileten yapay zekâ destekli Gmail filtresi.**
-
-Bilgisayar Mühendisliği öğrencisi olarak, geliştirme süreçlerine ve derslere odaklanabilmek için sürekli e-posta kontrol etme ihtiyacını ortadan kaldırmak amacıyla geliştirildi.
-
----
-
-## 🚀 Özellikler
-
-* %100 Sunucusuz Mimari (Google Apps Script)
-* Gemini Flash-Lite ile Akıllı Mail Analizi
-* Anlık Telegram Bildirimleri
-* Veri Kaybını Önleyen Fail-Safe Yapı
-* PropertiesService ile Güvenli Anahtar Yönetimi
-
-### Algılanabilen e-postalar
-
-* Staj görüşmesi davetleri
-* Google Play Console uyarıları
-* API değişiklik bildirimleri
-* Hesap ve ödeme uyarıları
-* Servis kesintisi bildirimleri
-* Acil müdahale gerektiren diğer kritik e-postalar
-
----
-
-## 🏗️ Mimari
-
-```mermaid
-flowchart LR
-
-gmail["Gmail"] --> script["Google Apps Script"]
-script --> gemini["Gemini Flash-Lite"]
-gemini --> decision["Öncelik Analizi"]
-decision --> telegram["Telegram Bildirimi"]
-```
-
----
-
-## ⚙️ Teknolojiler
-
-**Backend:** Google Apps Script
-
-**Yapay Zekâ:** Gemini Flash-Lite
-
-**Bildirim:** Telegram Bot API
-
-**Depolama:** Google PropertiesService
-
----
-
-## 💡 Neden Geliştirildi?
-
-Yazılım geliştirme, dersler ve kişisel projeler arasında çalışırken önemli e-postaların gözden kaçması oldukça kolaydır.
-
-Özellikle staj görüşmeleri, Play Console uyarıları veya API değişiklikleri gibi kritik bildirimlerin zamanında fark edilmesi gerekir.
-
-AI-Email-Guardian, gelen kutusunu sürekli takip ederek önemli e-postaları analiz eder ve anında Telegram üzerinden bildirir.
+**Güvenlik:** API anahtarlarını hiçbir zaman Code.js veya GitHub içine koyma. Yalnızca Google Apps Script Script Properties altında sakla.
