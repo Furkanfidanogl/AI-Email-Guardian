@@ -94,3 +94,36 @@ test("card last four digits cannot become a TL charge", () => {
 test("numeric safety Apps Script entrypoint", () => {
   assert.doesNotThrow(() => run("testNumericSafety()"));
 });
+
+
+test("currency + amount must match, including Turkish lirası", () => {
+  assert.equal(run('supportedMoneyClaims("₺179,99", "€179,99")'), false);
+  assert.equal(run('supportedMoneyClaims("179,99 Türk Lirası", "€179,99 ve ₺50,00")'), false);
+  assert.equal(run('supportedMoneyClaims("179,99 TL", "₺179,99")'), true);
+});
+
+test("charge must never be rendered as refund", () => {
+  ctx.source = run('buildEvidence("Ödeme","₺179,99 ödeme alındı.")');
+  const id = ctx.source.rows.find(row => row.text.includes("179,99")).id;
+  ctx.ai = {
+    title_tr: "Ödeme", status: "IMPORTANT", category: "PAYMENT",
+    points: [{ text: "₺179,99 iade edildi.", evidence_ids: [id] }],
+    has_action: false, action_text: "", action_evidence_ids: []
+  };
+  const result = run('finalizeAnalysis(ai,source,{subject:"Ödeme",from:"Google Play"})');
+  assert.doesNotMatch(result.points[0], /iade edildi/);
+  assert.match(result.points[0], /ödeme alındı/);
+});
+
+test("rejected application cannot become accepted", () => {
+  ctx.source = run('buildEvidence("Staj sonucu","Staj başvurunuz olumsuz sonuçlanmıştır.")');
+  const id = ctx.source.rows.find(row => row.text.includes("olumsuz")).id;
+  ctx.ai = {
+    title_tr:"Staj sonucu", status:"CRITICAL", category:"CAREER",
+    points:[{text:"Staj başvurunuz kabul edildi.",evidence_ids:[id]}],
+    has_action:false, action_text:"", action_evidence_ids:[]
+  };
+  const result=run('finalizeAnalysis(ai,source,{subject:"Staj sonucu",from:"İK"})');
+  assert.doesNotMatch(result.points[0], /kabul edildi/);
+  assert.match(result.points[0], /olumsuz/);
+});

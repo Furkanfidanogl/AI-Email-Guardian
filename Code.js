@@ -249,6 +249,9 @@ function analyzeWithGemini(message, source, apiKey) {
     "Her özet maddesi için gerçekten destekleyen 1-3 evidence_ids ver.",
     "Özetteki HER sayı, tarih, saat, fiyat, yüzde, kart son hanesi ve sürüm, seçtiğin kanıt satırında aynen bulunmalı.",
     "Sayıları hesaplama, değiştirme, biçimlendirme, yuvarlama veya yazıyla yeniden üretme.",
+    "Para birimini ASLA dönüştürme: EUR olan tutar TL olarak yazılamaz.",
+    "Tahsilat ile iade, kabul ile ret, ödeme başarısı ile başarısızlığı birbirine karıştırma.",
+    "Önemli sonuçları yalnızca açık kaynak cümlesine dayanarak yaz; kuşkuda doğrudan kaynaktaki ifadeyi kullan.",
     "Para biçimini aynen kaynakta kullan: ₺179,99 farklıdır 17.999 TL'den.",
     "Kaynaktaki tutar ödeme değil limit/fiyat/indirimse tahsil edildi deme.",
     "Gerektiğinde tek satırda iki kanıt seç; örneğin ücret başlığı ve hemen altındaki tutar.",
@@ -344,6 +347,9 @@ function analyzeWithGemini(message, source, apiKey) {
   );
 
   const data = JSON.parse(response.getContentText());
+  if (!data || typeof data !== "object") {
+    throw new Error("Gemini returned an invalid response");
+  }
   if (data.status && data.status !== "completed") {
     throw new Error("Gemini interaction incomplete: " + data.status);
   }
@@ -372,22 +378,71 @@ function supportedNumbers(text, evidence) {
  * Require a money amount to occur next to a currency indicator in evidence,
  * rather than accepting a card's final four digits as a price.
  */
+/**
+ * Amounts are verified as (exact numeric spelling, currency) pairs.
+ * Locale punctuation is never rewritten.
+ */
+function currencyCode(symbol) {
+  const s = String(symbol || "").toLocaleLowerCase("tr-TR").trim();
+  if (["₺", "tl", "try", "türk lirası", "lira"].includes(s)) return "TRY";
+  if (["€", "eur", "euro", "avro"].includes(s)) return "EUR";
+  if (["$", "usd", "dolar", "dollar"].includes(s)) return "USD";
+  if (["£", "gbp", "sterlin", "pound"].includes(s)) return "GBP";
+  return null;
+}
+
+function moneyPairs(text) {
+  const s = String(text || "");
+  const result = [];
+  const re = /([₺€£$])\s*(\d+(?:[.,]\d+)*)|(\d+(?:[.,]\d+)*)\s*(TL|TRY|USD|EUR|GBP|Türk\s+Lirası|lira|dolar|dollar|avro|euro|sterlin|pound)(?![\p{L}\p{N}_])/giu;
+  let match;
+  while ((match = re.exec(s)) !== null) {
+    const amount = match[2] || match[3];
+    const currency = currencyCode(match[1] || match[4]);
+    if (currency && amount) result.push({ amount, currency });
+  }
+  return result;
+}
+
+function currencyMentions(text) {
+  const re = /[₺€£$]|\b(?:TL|TRY|USD|EUR|GBP|Türk\s+Lirası|lira|dolar|dollar|avro|euro|sterlin|pound)(?![\p{L}\p{N}_])/giu;
+  const values = new Set();
+  const matches = String(text || "").match(re) || [];
+  matches.forEach(x => {
+    const currency = currencyCode(x);
+    if (currency) values.add(currency);
+  });
+  return values;
+}
+
 function supportedMoneyClaims(text, evidence) {
-  const claims = String(text || "").match(
-    /(?:[₺€£$]\s*\d+(?:[.,]\d+)*|\d+(?:[.,]\d+)*\s*(?:TL|TRY|USD|EUR|GBP|₺|€|£|\$))/gi
-  ) || [];
+  const claims = moneyPairs(text);
+  const source = moneyPairs(evidence);
+  if (!claims.every(claim => source.some(item =>
+    item.amount === claim.amount && item.currency === claim.currency
+  ))) return false;
 
-  if (!claims.length) return true;
+  const sourceCurrencies = currencyMentions(evidence);
+  for (const currency of currencyMentions(text)) {
+    if (!sourceCurrencies.has(currency)) return false;
+  }
+  return true;
+}
 
-  const sourceMoney = evidence.match(
-    /(?:[₺€£$]\s*\d+(?:[.,]\d+)*|\d+(?:[.,]\d+)*\s*(?:TL|TRY|USD|EUR|GBP|₺|€|£|\$))/gi
-  ) || [];
-
-  const sourceNumbers = sourceMoney.reduce((result, item) =>
-    result.concat(numberTokens(item)), []);
-
-  return claims.every(item =>
-    numberTokens(item).every(n => sourceNumbers.indexOf(n) !== -1));
+/**
+ * Backstop for high-impact claims: required outcome phrases must also occur
+ * in the cited source. Failing claims revert to actual source text.
+ */
+function supportedOutcomeClaims(text, evidence) {
+  const patterns = [
+    /(?:iade\s+edil(?:di|miştir|miş|iyor)|geri\s+ödeme\s+yapıl(?:dı|mış)|refund(?:ed|\s+issued|\s+processed)|para\s+iadesi\s+(?:yapıldı|gerçekleşti))/i,
+    /(?:tahsil\s+edil(?:di|miştir|miş)|ödeme\s+alın(?:dı|mıştır|mış)|ödeme\s+(?:çekil|gerçekleş)(?:di|miştir|miş)|(?:payment\s+)?charged|paid\s+successfully)/i,
+    /(?:ödeme\s+başarısız|ödeme\s+alınamadı|ödeme\s+reddedildi|payment\s+(?:failed|declined))/i,
+    /(?:başvuru(?:nuz|su|m)?\s+kabul\s+edil(?:di|miştir|miş)|kabul\s+edildi|başvuru(?:nuz|su|m)?\s+onaylan(?:dı|mıştır)|application\s+(?:accepted|approved))/i,
+    /(?:başvuru(?:nuz|su|m)?\s+reddedil(?:di|miştir|miş)|başvuru(?:nuz|su|m)?\s+olumsuz\s+sonuçlan(?:dı|mıştır)|başvur(?:u|unuz)\s+(?:ret|red)\s+edil(?:di|miştir)|application\s+(?:rejected|declined))/i,
+    /(?:iptal\s+edil(?:di|miştir|miş)|aboneli(?:k|ğiniz)\s+iptal|cancel(?:ed|led))/i
+  ];
+  return patterns.every(pattern => !pattern.test(text) || pattern.test(evidence));
 }
 
 function evidenceText(ids, source) {
@@ -408,7 +463,8 @@ function isSupportedStatement(text, ids, source) {
   const evidence = evidenceText(ids, source);
   if (!evidence) return false;
   return supportedNumbers(text, evidence) &&
-    supportedMoneyClaims(text, evidence);
+    supportedMoneyClaims(text, evidence) &&
+    supportedOutcomeClaims(text, evidence);
 }
 
 function compactExcerpt(value, maxChars) {
