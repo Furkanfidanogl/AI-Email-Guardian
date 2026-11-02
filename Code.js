@@ -374,7 +374,7 @@ function supportedNumbers(text, evidence) {
  */
 function supportedMoneyClaims(text, evidence) {
   const claims = String(text || "").match(
-    /(?:[₺€£$]\s*\d+(?:[.,]\d+)*|\d+(?:[.,]\d+)*\s*(?:TL|TRY|USD|EUR|GBP|₺|€|£|\$))\b?/gi
+    /(?:[₺€£$]\s*\d+(?:[.,]\d+)*|\d+(?:[.,]\d+)*\s*(?:TL|TRY|USD|EUR|GBP|₺|€|£|\$)))/gi
   ) || [];
 
   if (!claims.length) return true;
