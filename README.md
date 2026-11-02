@@ -101,35 +101,6 @@ flowchart LR
 
 Sistem e-postadan numaralandırılmış kısa kaynak parçaları oluşturur. Gemini bu parçaları referans göstererek yapılandırılmış bir özet üretir. Kod; sayıları, para birimlerini ve belirli kritik sonuç ifadelerini kontrol eder. Doğrulamadan geçmeyen bir ifade varsa uydurma bilgi göndermek yerine ilgili orijinal metin kullanılır.
 
-## ⚙️ Kurulum
-
-**Gereksinimler:** Google hesabı, Gemini API anahtarı, Telegram botu ve sohbet kimliği.
-
-1. [Google Apps Script](https://script.google.com/) üzerinden bir proje oluştur veya mevcut projeni aç.
-2. [`Code.js`](./Code.js) dosyasındaki kodun tamamını Apps Script editörüne yapıştır.
-3. **Proje Ayarları → Komut Dosyası Özellikleri (Script Properties)** alanına şunları ekle:
-
-   | Anahtar | Açıklama |
-   | --- | --- |
-   | `GEMINI_KEY` | Gemini API anahtarı |
-   | `TG_TOKEN` | Telegram bot token'ı |
-   | `TG_CHAT_ID` | Bildirim gönderilecek sohbet kimliği |
-
-4. Projeyi kaydet ve sayısal doğrulamayı kontrol etmek için `testNumericSafety` fonksiyonunu çalıştır.
-5. `testTelegram` ile bir örnek bildirim gönder; gerekli Google izinlerini onayla.
-6. `checkAndProcessEmails` fonksiyonu için istediğin sıklıkta **tek bir zaman tetikleyicisi** oluştur.
-
-**Not:** GitHub'da kodun güncellenmesi, çalışan Apps Script projesini kendiliğinden güncellemez. Yeni `Code.js` dosyasının Apps Script'e aktarılması gerekir.
-
-### Yerel testler
-
-Node.js 18 veya üzeri yeterlidir; ek paket kurulumu gerekmez.
-
-```bash
-node --check Code.js
-node --test tests/guardian.test.cjs
-```
-
 ## 🔐 Gizlilik ve güvenilirlik
 
 API anahtarları kodda değil, Script Properties içerisinde tutulur. E-postalar Google Apps Script tarafından okunur; ilgili içerik analiz amacıyla Gemini'ye, özet bildirimler ise Telegram'a gönderilir. Otomasyon e-postaları bilerek silmez, arşivlemez veya okundu olarak işaretlemez.
